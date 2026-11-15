@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a120d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="KickClip">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>KickClip</title>
+<style>
+:root{--bg:#0a120d;--sf:#121e16;--sf2:#1a2a20;--bd:#243b2c;--ac:#34e07a;--tx:#eaf3ec;--mu:#8aa092;--dn:#ff6161;--nav:64px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+body{padding-top:env(safe-area-inset-top)}
+main{height:100%;overflow:hidden}
+.tab{display:none;height:100%;overflow-y:auto;padding:12px 16px calc(var(--nav) + env(safe-area-inset-bottom) + 20px)}
+.tab.active{display:block}
+h1{font-size:22px;margin:2px 0 12px;display:flex;align-items:center;gap:10px}
+h1 img{width:30px;height:30px;border-radius:8px}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mu);margin:22px 0 8px}
+p{margin:0 0 10px}
+.note{font-size:13px;color:var(--mu)}
+.empty{color:var(--mu);text-align:center;padding:40px 10px}
+
+/* nav */
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:rgba(10,18,13,.96);border-top:1px solid var(--bd);padding-bottom:env(safe-area-inset-bottom);backdrop-filter:blur(10px);z-index:20}
+nav button{flex:1;height:var(--nav);background:none;border:0;color:var(--mu);font:600 11px system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+nav button.active{color:var(--ac)}
+nav svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* controlli */
+.btn{appearance:none;border:1px solid var(--bd);background:var(--sf2);color:var(--tx);border-radius:14px;padding:13px 16px;font:600 15px system-ui;min-height:48px;flex:1}
+.btn:disabled{opacity:.45}
+.btn.primary{background:var(--ac);border-color:var(--ac);color:#04200f}
+.btn.stop{background:var(--dn);border-color:var(--dn);color:#2a0606}
+.btn.ghost{background:transparent}
+.btn.danger{color:var(--dn);border-color:#4a2424;background:transparent}
+.btn.sm{min-height:38px;padding:8px 12px;font-size:14px;flex:none}
+.row{display:flex;gap:10px;margin:10px 0;align-items:center}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:18px;padding:14px 16px;margin:14px 0}
+.card ol{margin:6px 0 0;padding-left:20px}
+.card li{margin:6px 0}
+
+/* camera */
+.camwrap{position:relative;aspect-ratio:16/9;background:#000;border-radius:18px;overflow:hidden;border:1px solid var(--bd)}
+.camwrap video{display:none;width:100%;height:100%;object-fit:contain;background:#000}
+.camwrap.live video{display:block}
+.camwrap .ph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--mu);text-align:center;padding:16px;font-size:14px}
+.camwrap.live .ph{display:none}
+.ph svg{width:42px;height:42px;stroke:var(--mu);fill:none;stroke-width:1.6}
+.chips{position:absolute;left:10px;top:10px;display:flex;gap:6px}
+.chip{background:rgba(0,0,0,.6);border-radius:999px;padding:4px 10px;font:600 12px system-ui}
+.chip.rec{color:var(--ac)}
+.chip.hit{background:var(--ac);color:#04200f}
+.meter{position:relative;height:8px;background:var(--sf2);border-radius:99px;margin:10px 0 0;overflow:hidden}
+.meter #lvl{height:100%;width:0;background:linear-gradient(90deg,#1fa855,var(--ac));border-radius:99px}
+.meter #lvlThr{position:absolute;top:-2px;bottom:-2px;width:3px;background:#fff;opacity:.85;left:50%}
+.meterlbl{font-size:12px;color:var(--mu);margin:4px 2px 0}
+
+/* ultimo tiro */
+.bigspeed{font-size:54px;font-weight:800;line-height:1;letter-spacing:-.02em}
+.bigspeed small{font-size:18px;font-weight:600;color:var(--mu);margin-left:6px;letter-spacing:0}
+.lastrow{display:flex;justify-content:space-between;align-items:flex-end;gap:10px}
+
+/* griglia clip */
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(min-width:640px){.grid{grid-template-columns:repeat(3,1fr)}}
+.clip{position:relative;border-radius:16px;overflow:hidden;background:var(--sf);border:1px solid var(--bd);padding:0;color:inherit;text-align:left}
+.clip img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#000}
+.clip .sp{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.65);border-radius:10px;padding:3px 9px;font:800 15px system-ui}
+.clip .star{position:absolute;right:8px;top:6px;color:#ffd24a;font-size:18px}
+.clip .meta{padding:8px 10px;font-size:12px;color:var(--mu)}
+
+/* statistiche */
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.tile{background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:12px 14px}
+.tile b{display:block;font-size:28px;line-height:1.1}
+.tile span{font-size:12px;color:var(--mu)}
+.tile.rec b{color:var(--ac)}
+svg.chart{width:100%;height:auto;display:block}
+.day{display:flex;justify-content:space-between;padding:10px 2px;border-bottom:1px solid var(--bd);font-size:14px}
+.day:last-child{border:0}
+
+/* impostazioni */
+.field{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--bd)}
+.field:last-child{border:0}
+.field label{font-weight:600;flex:1}
+.field small{display:block;font-weight:400;color:var(--mu);font-size:12px}
+.field input[type=range]{width:140px;accent-color:var(--ac)}
+.field select{background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:9px 10px;font-size:15px;max-width:55%}
+.field .v{min-width:38px;text-align:right;color:var(--mu);font-size:14px}
+
+/* modali */
+.modal{position:fixed;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column;padding-top:env(safe-area-inset-top)}
+.modal.open{display:flex}
+.mhead{display:flex;justify-content:space-between;align-items:center;padding:8px 12px}
+.mbody{flex:1;overflow-y:auto;padding:0 12px calc(16px + env(safe-area-inset-bottom))}
+#pcanvas,#calCanvas{width:100%;height:auto;max-height:52vh;object-fit:contain;background:#000;border-radius:14px;display:block;touch-action:none}
+.ctrl{display:flex;gap:8px;margin:10px 0;align-items:center}
+.ctrl .btn{flex:1;min-height:44px;padding:8px}
+.ctrl button.on{background:var(--ac);color:#04200f;border-color:var(--ac)}
+input[type=range].wide{width:100%;accent-color:var(--ac)}
+.kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--bd);font-size:15px}
+.kv span{color:var(--mu)}
+.badge{display:inline-block;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:700}
+.badge.alta{background:#164d2b;color:#6dffa5}.badge.media{background:#4a3f12;color:#ffd24a}.badge.bassa{background:#4a2424;color:#ff9a9a}
+.calpanel{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+.calpanel select,.calpanel input{background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:10px;font-size:16px;flex:1;min-width:120px}
+
+#toast{position:fixed;left:50%;bottom:calc(var(--nav) + env(safe-area-inset-bottom) + 14px);transform:translate(-50%,20px);background:#e9f6ee;color:#06210f;padding:10px 16px;border-radius:12px;font:600 14px system-ui;opacity:0;pointer-events:none;transition:.25s;z-index:99;max-width:90vw;text-align:center}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<main>
+
+<!-- ================= REGISTRA ================= -->
+<section class="tab active" id="tab-rec">
+  <h1><img src="icon.svg" alt="">KickClip</h1>
+
+  <div class="camwrap" id="camwrap">
+    <video id="cam" playsinline muted autoplay></video>
+    <div class="ph" id="camPlaceholder">
+      <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.5"/><circle cx="12" cy="12" r="3"/></svg>
+      <div>Appoggia il telefono fermo, di lato al campo,<br>in orizzontale. Poi premi «Avvia».</div>
+    </div>
+    <div class="chips">
+      <span class="chip rec" id="chipState" hidden>● In ascolto</span>
+      <span class="chip" id="chipFps" hidden></span>
+    </div>
+  </div>
+  <div class="meter" id="meterWrap" hidden><div id="lvl"></div><i id="lvlThr"></i></div>
+  <div class="meterlbl" id="meterLbl" hidden>Livello audio · la linea bianca è la soglia del tiro</div>
+
+  <div class="row">
+    <button class="btn primary" id="btnStart">Avvia registrazione</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="btnManual" disabled>Salva ultimi 8 s</button>
+    <button class="btn ghost" id="btnCalib">Calibra scala</button>
+  </div>
+  <div class="note" id="calibState"></div>
+
+  <div class="card" id="lastCard" hidden>
+    <div class="lastrow">
+      <div>
+        <div class="note">Ultimo tiro · <span id="sessionCount">0</span> in questa sessione</div>
+        <div class="bigspeed" id="lastSpeed">–</div>
+        <div class="note" id="lastMeta"></div>
+      </div>
+      <button class="btn sm primary" id="btnLastOpen">Rivedi</button>
+    </div>
+  </div>
+
+  <div class="card" id="howto">
+    <b>Come si usa</b>
+    <ol>
+      <li>Fissa il telefono su un treppiede (o appoggialo) <b>di lato</b> rispetto al tiro, in orizzontale.</li>
+      <li>Premi <b>Calibra scala</b> e tocca due punti a distanza nota, per esempio i due pali (7,32 m).</li>
+      <li>Premi <b>Avvia</b>: l'app ascolta il «tump» del pallone e salva da sola i secondi prima e dopo ogni tiro.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= CLIP ================= -->
+<section class="tab" id="tab-clips">
+  <h1>Le tue clip</h1>
+  <div class="grid" id="clipGrid"></div>
+  <p class="empty" id="clipsEmpty">Nessuna clip ancora.<br>Registra qualche tiro e le trovi qui.</p>
+</section>
+
+<!-- ================= STATISTICHE ================= -->
+<section class="tab" id="tab-stats">
+  <h1>Statistiche</h1>
+  <div id="statsBody"></div>
+</section>
+
+<!-- ================= IMPOSTAZIONI ================= -->
+<section class="tab" id="tab-settings">
+  <h1>Impostazioni</h1>
+
+  <h2>Rilevamento</h2>
+  <div class="card">
+    <div class="field"><label for="sMode">Modalità<small>Audio = ascolta l'impatto sul pallone</small></label>
+      <select id="sMode">
+        <option value="audio">Audio (consigliata)</option>
+        <option value="both">Audio + movimento</option>
+        <option value="manual">Solo manuale</option>
+      </select></div>
+    <div class="field"><label for="sSens">Sensibilità<small>Alza se non rileva i tiri, abbassa se scatta a vuoto</small></label>
+      <input type="range" id="sSens" min="1" max="10" step="1"><span class="v" id="sSensV"></span></div>
+  </div>
+
+  <h2>Clip</h2>
+  <div class="card">
+    <div class="field"><label for="sPre">Secondi prima del tiro</label>
+      <input type="range" id="sPre" min="2" max="8" step="1"><span class="v" id="sPreV"></span></div>
+    <div class="field"><label for="sPost">Secondi dopo il tiro</label>
+      <input type="range" id="sPost" min="2" max="8" step="1"><span class="v" id="sPostV"></span></div>
+    <div class="field"><label for="sQuality">Qualità immagine</label>
+      <select id="sQuality"><option value="low">Risparmio</option><option value="std">Standard</option><option value="high">Alta</option></select></div>
+    <div class="field"><label for="sMax">Clip da conservare<small>I preferiti (★) non vengono mai cancellati</small></label>
+      <select id="sMax"><option value="20">20</option><option value="40">40</option><option value="80">80</option></select></div>
+  </div>
+
+  <h2>Fotocamera</h2>
+  <div class="card">
+    <div class="field"><label for="sFps">Fotogrammi al secondo<small>60 = misure più precise, più batteria</small></label>
+      <select id="sFps"><option value="30">30</option><option value="60">60</option></select></div>
+    <div class="field"><label for="sFacing">Camera</label>
+      <select id="sFacing"><option value="environment">Posteriore</option><option value="user">Frontale</option></select></div>
+    <div class="field"><label>Scala di misura<small id="calibState2"></small></label>
+      <button class="btn sm danger" id="btnResetCalib">Azzera</button></div>
+  </div>
+
+  <h2>Dati</h2>
+  <div class="card">
+    <p class="note" id="storageInfo"></p>
+    <div class="row"><button class="btn danger" id="btnClearAll">Elimina tutte le clip</button></div>
+    <div class="row"><button class="btn" id="btnInstall" hidden>Installa l'app</button></div>
+    <p class="note">Su iPhone: Condividi → «Aggiungi alla schermata Home».</p>
+  </div>
+
+  <h2>Da sapere</h2>
+  <div class="card">
+    <p class="note">La velocità è una <b>stima</b> ricavata dal video: dipende dalla scala che imposti, dalla posizione del telefono (di lato, fermo) e dai fotogrammi al secondo. Vale per il piano della scala: se il tiro va verso la camera o si allontana, il valore sarà sottostimato.</p>
+    <p class="note">Tutto resta sul tuo telefono: video e analisi non vengono inviati a nessun server.</p>
+  </div>
+</section>
+
+</main>
+
+<nav>
+  <button class="active" data-tab="rec"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>Registra</button>
+  <button data-tab="clips"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/></svg>Clip</button>
+  <button data-tab="stats"><svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>Statistiche</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>Impostazioni</button>
+</nav>
+
+<!-- ================= PLAYER ================= -->
+<div class="modal" id="player">
+  <div class="mhead">
+    <button class="btn sm ghost" id="pClose">‹ Indietro</button>
+    <div>
+      <button class="btn sm ghost" id="pFav">☆ Preferito</button>
+    </div>
+  </div>
+  <div class="mbody">
+    <canvas id="pcanvas"></canvas>
+    <input class="wide" type="range" id="pSlider" min="0" max="0" value="0" step="1">
+    <div class="ctrl">
+      <button class="btn" id="pPrev">‹ Fotogr.</button>
+      <button class="btn primary" id="pPlay">▶</button>
+      <button class="btn" id="pNext">Fotogr. ›</button>
+    </div>
+    <div class="ctrl" id="pRates">
+      <button class="btn" data-rate="0.25">0,25×</button>
+      <button class="btn" data-rate="0.5">0,5×</button>
+      <button class="btn" data-rate="1">1×</button>
+      <button class="btn on" id="pOverlay">Traiettoria</button>
+    </div>
+    <div class="note" id="pTime" style="text-align:center"></div>
+    <div id="pInfo" style="margin-top:8px"></div>
+    <div class="row">
+      <button class="btn" id="pCalib">Imposta scala</button>
+      <button class="btn" id="pExport">Esporta video</button>
+    </div>
+    <div class="row"><button class="btn danger" id="pDelete">Elimina clip</button></div>
+  </div>
+</div>
+
+<!-- ================= CALIBRAZIONE ================= -->
+<div class="modal" id="calib">
+  <div class="mhead"><b>Calibra la scala</b><button class="btn sm ghost" id="calCancel">Annulla</button></div>
+  <div class="mbody">
+    <p class="note" id="calHint">Tocca due punti di cui conosci la distanza reale (per esempio i due pali della porta). Devono trovarsi sulla stessa linea in cui passa il pallone.</p>
+    <canvas id="calCanvas"></canvas>
+    <div class="calpanel">
+      <select id="calPreset">
+        <option value="7.32">Porta a 11 (7,32 m)</option>
+        <option value="5">Porta a 7 (5 m)</option>
+        <option value="3">Porta a 5 (3 m)</option>
+        <option value="2.44">Altezza porta (2,44 m)</option>
+        <option value="">Altra misura…</option>
+      </select>
+      <input id="calMeters" type="text" inputmode="decimal" placeholder="metri" value="7.32">
+    </div>
+    <div class="row"><button class="btn primary" id="calOk">Applica</button></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="analysis.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
