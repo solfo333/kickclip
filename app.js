@@ -448,7 +448,7 @@ async function renderClips() {
     b.className = 'clip';
     const sp = !x ? '—' : x.kmh ? `${fmt0(x.kmh)} km/h` : `${fmt0(x.speedPx)} px/s`;
     b.innerHTML = `<img alt="" src="${url}"><span class="sp">${sp}</span>${m.fav ? '<span class="star">★</span>' : ''}` +
-      `<div class="meta">${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} · ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}${m.source === 'manuale' ? ' · manuale' : ''}</div>`;
+      `<div class="meta">${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} · ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}${m.source === 'manuale' ? ' · manuale' : m.source === 'video' ? ' · video' : ''}</div>`;
     b.onclick = () => openPlayer(m.id);
     grid.appendChild(b);
   }
@@ -541,7 +541,8 @@ async function show(i) {
   if (P.overlay) drawOverlay(P.ctx, P.meta, i);
   $('#pSlider').value = i;
   const tt = P.meta.times[i];
-  $('#pTime').textContent = (P.meta.source === 'manuale' ? '' : (tt >= 0 ? '+' : '') ) + tt.toFixed(2).replace('.', ',') + ' s' + (P.meta.source === 'manuale' ? '' : ' dall\'impatto');
+  const free = isFree(P.meta);
+  $('#pTime').textContent = (free ? '' : (tt >= 0 ? '+' : '')) + tt.toFixed(2).replace('.', ',') + ' s' + (free ? '' : ' dall\'impatto');
   for (let k = 1; k <= 6; k++) if (i + k < P.frames.length) bitmap(i + k).catch(() => {});
 }
 
@@ -606,7 +607,7 @@ function updateFavBtn() { $('#pFav').textContent = P.meta && P.meta.fav ? '★ P
 function renderInfo() {
   const m = P.meta, x = metrics(m), el = $('#pInfo');
   const when = new Date(m.ts).toLocaleString('it-IT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
-  const foot = `<p class="note" style="margin-top:10px">${when} · rilevato da ${m.source === 'manuale' ? 'salvataggio manuale' : 'audio'}</p>`;
+  const foot = `<p class="note" style="margin-top:10px">${when} · ${m.source === 'video' ? 'video caricato' : m.source === 'manuale' ? 'salvataggio manuale' : 'rilevato dall\'audio'}</p>`;
   if (!x) {
     const why = m.analysis && m.analysis.reason ? m.analysis.reason : 'palla non rilevata';
     el.innerHTML = `<div class="kv"><b>Analisi</b><span>${why}</span></div>` +
@@ -885,6 +886,142 @@ function bindSettings() {
     toast('Clip eliminate');
   };
 }
+
+/* ============================ Carica un video ============================ */
+const VID = { url: null, dur: 0, busy: false, cancel: false };
+function isFree(m) { return m.source === 'manuale' || m.source === 'video'; }
+
+function updateVidInfo() {
+  const s = (+$('#vStart').value) / 10;
+  const len = Math.max(0, Math.min(8, VID.dur - s));
+  $('#vInfo').textContent = `Inizio a ${s.toFixed(1).replace('.', ',')} s · analizzo ${len.toFixed(1).replace('.', ',')} s di video (durata totale ${VID.dur.toFixed(1).replace('.', ',')} s)`;
+}
+
+function openVideoModal(file) {
+  if (VID.url) URL.revokeObjectURL(VID.url);
+  VID.url = URL.createObjectURL(file);
+  const v = $('#vPrev');
+  $('#vProg').textContent = '';
+  $('#vGo').disabled = true;
+  $('#vModal').classList.add('open');
+  v.onloadedmetadata = () => {
+    VID.dur = isFinite(v.duration) ? v.duration : 0;
+    const sl = $('#vStart');
+    sl.max = Math.max(0, Math.floor((VID.dur - 1) * 10));
+    sl.value = 0;
+    sl.disabled = VID.dur <= 8;
+    updateVidInfo();
+    $('#vGo').disabled = VID.dur < 1;
+    if (VID.dur < 1) toast('Video troppo corto');
+  };
+  v.onerror = () => { toast('Non riesco a leggere questo video'); closeVideoModal(); };
+  v.src = VID.url;
+  v.load();
+}
+
+function closeVideoModal() {
+  VID.cancel = true;
+  const v = $('#vPrev');
+  v.pause();
+  v.removeAttribute('src');
+  v.load();
+  $('#vModal').classList.remove('open');
+}
+
+function seekTo(v, t) {
+  return new Promise(res => {
+    if (Math.abs(v.currentTime - t) < 0.001) { res(); return; }
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      v.removeEventListener('seeked', onSeeked);
+      clearTimeout(guard);
+      res();
+    };
+    const onSeeked = () => setTimeout(done, 60); // lascia il tempo a Safari di decodificare il fotogramma
+    const guard = setTimeout(done, 2000);
+    v.addEventListener('seeked', onSeeked);
+    v.currentTime = t;
+  });
+}
+
+async function analyzeVideo() {
+  if (VID.busy) return;
+  const v = $('#vPrev');
+  v.pause();
+  const k = +$('#vSlow').value || 1;
+  const sps = +$('#vSample').value || 30;
+  const start = (+$('#vStart').value) / 10;
+  const len = Math.min(8, VID.dur - start);
+  const N = Math.floor(len * sps);
+  if (N < 8) { toast('Video troppo corto da questo punto'); return; }
+
+  const vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw || !vh) { toast('Video non leggibile'); return; }
+  const W = Math.min(960, vw), H = Math.round(W * vh / vw);
+  const AW = 320, AH = Math.round(AW * vh / vw);
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const cx = cv.getContext('2d');
+  const sm = document.createElement('canvas'); sm.width = AW; sm.height = AH;
+  const sx = sm.getContext('2d', { willReadFrequently: true });
+
+  VID.busy = true; VID.cancel = false;
+  $('#vGo').disabled = true;
+  const gray = [], blobs = [], times = [];
+  try {
+    for (let i = 0; i < N; i++) {
+      if (VID.cancel) throw new Error('annullato');
+      await seekTo(v, Math.min(VID.dur - 0.01, start + i / sps));
+      cx.drawImage(v, 0, 0, W, H);
+      const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', QUALITY[settings.quality] || 0.65));
+      sx.drawImage(v, 0, 0, AW, AH);
+      const px = sx.getImageData(0, 0, AW, AH).data;
+      const g = new Uint8Array(AW * AH);
+      for (let a = 0, b = 0; a < g.length; a++, b += 4) g[a] = (px[b] * 77 + px[b + 1] * 150 + px[b + 2] * 29) >> 8;
+      gray.push(g); blobs.push(blob);
+      times.push(i / (sps * k)); // tempo reale (con lo slow-motion il video è dilatato di k volte)
+      if (i % 4 === 0) $('#vProg').textContent = `Leggo il video… ${Math.round(i / N * 100)}%`;
+    }
+    $('#vProg').textContent = 'Cerco il pallone…';
+    const analysis = await runAnalysis({ frames: gray, times, w: AW, h: AH, impactTime: null, mpp: null });
+
+    let thumbIdx = Math.floor(blobs.length / 2);
+    if (analysis.ok) thumbIdx = analysis.launchIndex;
+    const meta = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      ts: Date.now(), w: W, h: H, aw: AW, ah: AH,
+      times, source: 'video', analysis, calib: null, fav: false,
+      thumb: blobs[thumbIdx]
+    };
+    await DB.putClip(meta, blobs);
+    await enforceLimit();
+    VID.busy = false;
+    closeVideoModal();
+    if (analysis.ok) toast('Tiro trovato: tocca «Imposta scala» per i km/h', 4000);
+    else toast('Palla non rilevata: prova a iniziare più vicino al tiro', 4000);
+    await openPlayer(meta.id);
+  } catch (e) {
+    VID.busy = false;
+    $('#vGo').disabled = false;
+    $('#vProg').textContent = '';
+    if (e.message !== 'annullato') { console.error(e); toast('Analisi non riuscita: spazio esaurito o video non supportato'); }
+  }
+}
+
+$('#btnUpload').onclick = () => $('#fileVideo').click();
+$('#fileVideo').onchange = e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (f) openVideoModal(f);
+};
+$('#vStart').oninput = e => {
+  const t = (+e.target.value) / 10;
+  updateVidInfo();
+  try { $('#vPrev').currentTime = t; } catch (err) { /* ignora */ }
+};
+$('#vGo').onclick = analyzeVideo;
+$('#vCancel').onclick = closeVideoModal;
 
 /* ============================ Avvio ============================ */
 $('#btnStart').onclick = async () => {
