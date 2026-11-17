@@ -65,8 +65,8 @@
       for (const c of components(mask, w, h, stack)) {
         if (c.a < p.minArea || c.a > p.maxArea) continue;
         const ar = c.bw / c.bh;
-        if (ar < 0.3 || ar > 3.3) continue;
-        if (c.a / (c.bw * c.bh) < 0.35) continue;
+        if (ar < p.arMin || ar > p.arMax) continue;
+        if (c.a / (c.bw * c.bh) < p.fillMin) continue;
         keep.push(c);
       }
       if (keep.length > 25) {
@@ -135,16 +135,16 @@
       const vx = dx / dtv, vy = dy / dtv;
       const dt = times[k] - times[last.i];
       const px = last.x + vx * dt, py = last.y + vy * dt;
-      const r = Math.max(5, 0.35 * Math.hypot(vx, vy) * dt + 3);
+      const r = Math.max(p.rMin, p.rK * Math.hypot(vx, vy) * dt + p.rAdd);
       let best = null, bd = Infinity;
       for (const c of cands[k]) {
         const d = Math.hypot(c.x - px, c.y - py);
         if (d >= r || d >= bd) continue;
-        if ((c.x - last.x) * dx + (c.y - last.y) * dy <= 0) continue; // niente inversioni
+        if ((c.x - last.x) * dx + (c.y - last.y) * dy <= p.invTol) continue; // niente inversioni
         bd = d; best = c;
       }
       if (best) { chain.push(best); prev = last; last = best; miss = 0; }
-      else if (++miss > 2) break;
+      else if (++miss > p.maxMiss) break;
     }
     return chain;
   }
@@ -155,7 +155,7 @@
     for (let i = 0; i < n; i++) {
       if (times[i] < p.launchMin || times[i] > p.launchMax) continue;
       for (const c1 of cands[i]) {
-        for (let j = i + 1; j <= Math.min(n - 1, i + 3); j++) {
+        for (let j = i + 1; j <= Math.min(n - 1, i + p.maxGap); j++) {
           const gap = j - i;
           for (const c2 of cands[j]) {
             const step = Math.hypot(c2.x - c1.x, c2.y - c1.y) / gap;
@@ -181,7 +181,19 @@
    * o.mpp      : metri per pixel (null se non calibrato)
    */
   function analyzeClip(o) {
-    const frames = o.frames, times = o.times, w = o.w, h = o.h;
+    const w = o.w, h = o.h;
+    // scarta i fotogrammi identici al precedente (seek imprecisi, video con frame ripetuti):
+    // con due frame uguali la differenza a 3 frame non vede più il pallone
+    const frames = [], times = [], orig = [];
+    for (let i = 0; i < o.frames.length; i++) {
+      if (i > 0) {
+        const a = o.frames[i], b = o.frames[i - 1];
+        let same = true;
+        for (let k = 0; k < a.length; k += 3) if (a[k] !== b[k]) { same = false; break; }
+        if (same) continue;
+      }
+      frames.push(o.frames[i]); times.push(o.times[i]); orig.push(i);
+    }
     const n = frames.length;
     if (n < 8) return { ok: false, reason: 'clip troppo corto' };
     const mpp = o.mpp > 0 ? o.mpp : null;
@@ -189,50 +201,76 @@
     const ballPx = mpp ? BALL_DIAMETER_M / mpp : null;
     const expArea = ballPx ? Math.PI * Math.pow(ballPx / 2, 2) : 25;
     const free = o.impactTime == null;
-    const p = {
-      diffThr: o.diffThr || 22,
-      maxFgFrac: 0.12,
-      minArea: mpp ? Math.max(2, expArea * 0.3) : 3,
-      maxArea: mpp ? Math.max(30, expArea * 7) : 220,
+    const common = {
       expArea,
-      minStep: mpp ? Math.max(1.5, 3 / mpp * dtMed) : 2,
-      maxStep: mpp ? Math.min(w * 0.3, 45 / mpp * dtMed) : w * 0.3,
-      minPoints: 5,
       launchMin: free ? -Infinity : o.impactTime - 0.35,
       launchMax: free ? Infinity : o.impactTime + 0.45,
       tMax: free ? Infinity : o.impactTime + 2.0
     };
+    const dThr = o.diffThr || 22;
+    // 1° passaggio, severo: pochi falsi positivi, è quello di cui ci si può fidare
+    const strict = Object.assign({}, common, {
+      diffThr: dThr, maxFgFrac: 0.12,
+      minArea: mpp ? Math.max(2, expArea * 0.3) : 3,
+      maxArea: mpp ? Math.max(30, expArea * 7) : 220,
+      minStep: mpp ? Math.max(1.5, 3 / mpp * dtMed) : 2,
+      maxStep: mpp ? Math.min(w * 0.3, 45 / mpp * dtMed) : w * 0.3,
+      minPoints: 5, arMin: 0.3, arMax: 3.3, fillMin: 0.35,
+      rMin: 5, rK: 0.35, rAdd: 3, maxMiss: 2, invTol: 0, maxGap: 3
+    });
+    // 2° passaggio, largo: recupera i tiri sfocati o molto veloci che il primo scarta.
+    // Il risultato è sempre a bassa affidabilità e passa dei controlli di buon senso.
+    const loose = Object.assign({}, common, {
+      diffThr: dThr - 3, maxFgFrac: 0.15,
+      minArea: mpp ? Math.max(2, expArea * 0.2) : 2,
+      maxArea: mpp ? Math.max(35, expArea * 8) : 250,
+      minStep: mpp ? Math.max(1.0, 2 / mpp * dtMed) : 1.5,
+      maxStep: mpp ? Math.min(w * 0.35, 55 / mpp * dtMed) : w * 0.35,
+      minPoints: 6, arMin: 0.2, arMax: 4.5, fillMin: 0.25,
+      rMin: 8, rK: 0.45, rAdd: 5, maxMiss: 3, invTol: -10, maxGap: 4
+    });
 
-    const cands = findCandidates(frames, w, h, p);
-    const found = searchChains(cands, times, p);
-    if (!found) return { ok: false, reason: 'palla non rilevata' };
-
-    const { chain, fit } = found;
-    const pts = chain.map(c => ({ i: c.i, t: times[c.i], x: c.x, y: c.y }));
-    const vx0 = fit.bx[1], vy0 = fit.by[1]; // velocità (px/s) al primo punto tracciato
-    const speedPx = Math.hypot(vx0, vy0);
-    const angleDeg = Math.atan2(-vy0, Math.abs(vx0)) * 180 / Math.PI; // + = verso l'alto
-    let ymin = Infinity, pathPx = 0;
-    for (let k = 0; k < pts.length; k++) {
-      if (pts[k].y < ymin) ymin = pts[k].y;
-      if (k) pathPx += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y);
-    }
-    const n2 = pts.length, rms = fit.rms;
-    const confidence = (n2 >= 10 && rms <= 1.5) ? 'alta' : (n2 >= 6 && rms <= 3) ? 'media' : 'bassa';
-    return {
-      ok: true,
-      points: pts,
-      launchIndex: pts[0].i,
-      speedPx,
-      angleDeg,
-      heightPx: Math.max(0, pts[0].y - ymin),
-      pathPx,
-      spanPx: Math.abs(pts[n2 - 1].x - pts[0].x),
-      direction: vx0 >= 0 ? 'destra' : 'sinistra',
-      rms,
-      n: n2,
-      confidence
+    const attempt = (p, isLoose) => {
+      const cands = findCandidates(frames, w, h, p);
+      const found = searchChains(cands, times, p);
+      if (!found) return null;
+      const { chain, fit } = found;
+      const pts = chain.map(c => ({ i: orig[c.i], t: times[c.i], x: c.x, y: c.y }));
+      const vx0 = fit.bx[1], vy0 = fit.by[1]; // velocità (px/s) al primo punto tracciato
+      const speedPx = Math.hypot(vx0, vy0);
+      let ymin = Infinity, pathPx = 0;
+      for (let k = 0; k < pts.length; k++) {
+        if (pts[k].y < ymin) ymin = pts[k].y;
+        if (k) pathPx += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y);
+      }
+      // controllo di buon senso del 2° passaggio: un tiro percorre strada e va veloce
+      if (isLoose && (pathPx < Math.max(25, 0.08 * w) || speedPx < 0.5 * w)) return null;
+      const n2 = pts.length, rms = fit.rms;
+      // controllo di qualità: un pallone vero ha una traiettoria liscia. Le catene corte e
+      // "storte" sono coincidenze di disturbi casuali e vengono scartate.
+      if (rms > 3 || (n2 < 8 && rms > 1.5)) return null;
+      let confidence = (n2 >= 10 && rms <= 1.5) ? 'alta' : (n2 >= 6 && rms <= 3) ? 'media' : 'bassa';
+      if (isLoose) confidence = 'bassa';
+      return {
+        ok: true,
+        points: pts,
+        launchIndex: pts[0].i,
+        speedPx,
+        angleDeg: Math.atan2(-vy0, Math.abs(vx0)) * 180 / Math.PI, // + = verso l'alto
+        heightPx: Math.max(0, pts[0].y - ymin),
+        pathPx,
+        spanPx: Math.abs(pts[n2 - 1].x - pts[0].x),
+        direction: vx0 >= 0 ? 'destra' : 'sinistra',
+        rms,
+        n: n2,
+        confidence,
+        pass: isLoose ? 'larga' : 'severa'
+      };
     };
+
+    let res = attempt(strict, false);
+    if (!res && o.fallback !== false) res = attempt(loose, true);
+    return res || { ok: false, reason: 'palla non rilevata' };
   }
 
   return { analyzeClip, BALL_DIAMETER_M };
