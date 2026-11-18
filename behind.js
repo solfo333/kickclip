@@ -28,8 +28,8 @@
   }
 
   /* candidati tondi: bianchi, oppure non erba (i palloni hanno disegni diversi) */
-  function candidates(f) {
-    const w = f.width, h = f.height, n = w * h, sc = w / 585;
+  function candidates(f, scale) {
+    const w = f.width, h = f.height, n = w * h, sc = scale || w / 585;
     const white = new Uint8Array(n), ng = new Uint8Array(n);
     for (let i = 0, p = 0; i < n; i++, p += 4) {
       const r = f.data[p], g = f.data[p + 1], b = f.data[p + 2];
@@ -100,8 +100,8 @@
     for (const c of still.slice(0, 8)) {
       if (cancelled()) return { ok: false, reason: 'annullato' };
       prog('Controllo il pallone…', 0.05 + 0.1 * (tried++ / 8));
-      const cs = 160, cr = crop(f0, c.x, c.y, cs);
-      const dets = net.detect(cr.img, { size: 256, conf: 0.25 });
+      const cs = Math.round(160 * sc), cr = crop(f0, c.x, c.y, cs);
+      const dets = net.detect(cr.img, { size: Math.max(256, Math.round(256 * sc / 32) * 32), conf: 0.25 });
       const hit = dets.find((r) => Math.hypot(r.x + cr.x0 - c.x, r.y + cr.y0 - c.y) <= Math.max(8 * sc, c.d));
       if (hit && (!rest || hit.score > rest.score)) rest = { x: c.x, y: c.y, d: c.d, score: hit.score, bbox: (hit.w + hit.h) / 2 };
     }
@@ -133,34 +133,62 @@
     if (kick < 0) return { ok: false, reason: 'non vedo il calcio: il pallone non si muove nel video', rest };
 
     // 3) primi fotogrammi di volo
+    // pallone piccolo nell'immagine: per il volo rileggo i fotogrammi a risoluzione più alta
+    const W2 = rest.d / sc < 28 ? (opt.hiWidth || 800) : w, k2 = W2 / w, sc2 = W2 / 585;
+    const gf = (i) => (W2 === w ? getFrame(i) : getFrame(i, W2));
+    const R = { x: rest.x * k2, y: rest.y * k2, d: rest.d * k2 };
     const pts = [{ t: times[Math.max(0, kick - 1)], i: Math.max(0, kick - 1), x: rest.x, y: rest.y, d: rest.d, score: rest.score }];
-    let last = pts[0], vel = null, miss = 0;
+    let last = { t: pts[0].t, x: R.x, y: R.y }, vel = null, miss = 0, lastD = R.d;
     const maxK = Math.min(N - 1, kick + (opt.maxFlight || 10));
     for (let i = kick; i <= maxK && miss < (pts.length > 1 ? 3 : 5); i++) {
       if (cancelled()) return { ok: false, reason: 'annullato' };
       prog('Seguo il pallone…', 0.3 + 0.65 * ((i - kick) / (maxK - kick + 1)));
       const dt = times[i] - last.t;
-      const px = vel ? last.x + vel.x * dt : last.x, py = vel ? last.y + vel.y * dt : last.y - rest.d * 3;
+      const px = vel ? last.x + vel.x * dt : last.x, py = vel ? last.y + vel.y * dt : last.y - R.d * 3;
       // finestra di ricerca: grande finché non conosco la velocità, poi attorno alla posizione prevista
       const spd = vel ? Math.hypot(vel.x, vel.y) * dt : 0;
-      const cs = Math.min(w, h, vel ? Math.round(Math.max(224, Math.min(352, 2.2 * spd + 128))) : 352);
-      const f = await getFrame(i), cr = crop(f, px, py, cs);
-      const dets = net.detect(cr.img, { size: Math.max(256, Math.round(cs * 1.35 / 32) * 32), conf: 0.2 });
-      const reach = Math.max(rest.d * 4, cs * 0.5);
-      const cand = dets.map((q) => ({ x: q.x + cr.x0, y: q.y + cr.y0, score: q.score, bbox: (q.w + q.h) / 2 }))
+      const f = await gf(i), W = f.width, H = f.height;
+      const cs = Math.min(W, H, vel ? Math.round(Math.max(224 * sc2, Math.min(352 * sc2, 2.2 * spd + 128 * sc2))) : Math.round(352 * sc2));
+      const cr = crop(f, px, py, cs);
+      const dets = net.detect(cr.img, { size: Math.max(256, Math.round(cs * 1.35 / 32) * 32), conf: vel ? 0.08 : 0.2 });
+      const reach = Math.max(R.d * 4, cs * 0.5);
+      let cand = dets.map((q) => ({ x: q.x + cr.x0, y: q.y + cr.y0, score: q.score, bbox: (q.w + q.h) / 2, src: 'rete' }))
         // il pallone parte: scarta quello ancora fermo al punto di partenza
-        .filter((q) => Math.hypot(q.x - rest.x, q.y - rest.y) > rest.d * 0.8 && Math.hypot(q.x - px, q.y - py) <= reach);
+        .filter((q) => Math.hypot(q.x - R.x, q.y - R.y) > R.d * 0.8 && Math.hypot(q.x - px, q.y - py) <= reach)
+        // senza velocità nota (primo punto) mi fido solo di rilevamenti sicuri, per non agganciare un altro oggetto
+        .filter((q) => vel || q.score >= 0.4);
+      // rilevamenti incerti: solo molto vicini alla posizione prevista (altrimenti è facile agganciare un altro oggetto)
+      cand = cand.filter((q) => q.score >= 0.3 || Math.hypot(q.x - px, q.y - py) <= Math.max(R.d * 2, cs * 0.25));
+      // ...e non devono cambiare bruscamente direzione rispetto al moto già visto
+      if (vel) cand = cand.filter((q) => {
+        if (q.score >= 0.3) return true;
+        const a1 = Math.atan2(q.x - last.x, -(q.y - last.y)), a0 = Math.atan2(vel.x, -vel.y);
+        let d = Math.abs(a1 - a0) * 180 / Math.PI; if (d > 180) d = 360 - d;
+        return d <= 35;
+      });
+      if (!cand.length && vel && i > kick) {
+        // la rete non lo vede più (troppo piccolo): cerco una macchia chiara, tonda, NUOVA (non c'era nel fotogramma prima)
+        // vicino a dove dovrebbe essere
+        const fp = await gf(i - 1), cp = crop(fp, px, py, cs);
+        const prev = candidates(cp.img, sc2).filter((o) => o.kind === 'bianco');
+        const near2 = (o) => prev.some((q) => Math.hypot(q.x - o.x, q.y - o.y) <= 3 * sc2);
+        cand = candidates(cr.img, sc2).filter((o) => o.kind === 'bianco')
+          .map((o) => ({ x: o.x + cr.x0, y: o.y + cr.y0, d: o.d, score: 0.3, bbox: o.d, src: 'moto', still: near2(o) }))
+          .filter((o) => !o.still && o.d >= 0.4 * lastD && o.d <= 2 * lastD && Math.hypot(o.x - px, o.y - py) <= Math.max(spd * 0.6, 14 * sc2));
+      }
+      log('passo', i, 'prev', Math.round(px), Math.round(py), 'cs', cs, 'reti', dets.slice(0, 4).map((q) => [Math.round(q.x + cr.x0), Math.round(q.y + cr.y0), +q.score.toFixed(2)].join(':')).join(' '), 'cand', cand.length);
       if (!cand.length) { miss++; continue; }
       miss = 0;
       cand.sort((a, b) => Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py));
       const c = cand[0];
-      if (i === kick && Math.hypot(c.x - rest.x, c.y - rest.y) < rest.d * 1.2) continue;
-      const p = { t: times[i], i, x: c.x, y: c.y, d: c.bbox, score: c.score };
+      if (i === kick && Math.hypot(c.x - R.x, c.y - R.y) < R.d * 1.2) continue;
+      const p = { t: times[i], i, x: c.x, y: c.y, d: c.bbox, score: c.score, src: c.src };
       const dtp = p.t - last.t;
       if (dtp > 1e-6) vel = { x: (p.x - last.x) / dtp, y: (p.y - last.y) / dtp };
-      pts.push(p); last = p;
+      last = p; lastD = Math.max(4, c.bbox);
+      pts.push({ t: p.t, i, x: p.x / k2, y: p.y / k2, d: p.d / k2, score: p.score, src: p.src });
     }
-    log('punti', pts.map((p) => [p.i, Math.round(p.x), Math.round(p.y), +p.score.toFixed(2)].join(':')).join(' '));
+    log('punti', pts.map((p) => [p.i, Math.round(p.x), Math.round(p.y), +p.score.toFixed(2), p.src || ''].join(':')).join(' '));
     const res = { view: 'dietro', kickIndex: kick, kickTime: times[kick], rest, points: pts, n: pts.length, launchIndex: Math.max(0, kick - 1), confidence: 'bassa', speedPx: null, pass: 'dietro' };
     if (pts.length < 3) return Object.assign(res, { ok: false, reason: 'calcio trovato, ma ho perso il pallone subito dopo' });
 

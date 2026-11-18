@@ -627,7 +627,7 @@ function renderInfo() {
   }
   if (x.behind) {
     el.innerHTML = `<div class="bigspeed" style="font-size:34px">${x.dir}<small>vista da dietro</small></div>` +
-      `<div class="kv">Angolo nell'immagine<span>${fmt0(Math.abs(x.angle))}° ${x.angle > 0 ? 'a destra' : x.angle < 0 ? 'a sinistra' : ''}</span></div>` +
+      `<div class="kv">Angolo nell'immagine<span>${x.dir === 'dritto' ? 'dritto' : fmt0(Math.abs(x.angle)) + '° a ' + x.dir}</span></div>` +
       `<div class="kv">Punti tracciati<span>${x.n}</span></div>` +
       `<div class="kv">Affidabilità<span class="badge ${x.conf}">${x.conf}</span></div>` +
       `<p class="note">Da dietro non ti do i km/h: dipendono dallo zoom e dalla distanza e per ora non sono affidabili. Il percorso verde è dove ho visto davvero il pallone; la linea gialla tratteggiata è solo una previsione (continuazione più probabile) e diventa meno sicura man mano che si allontana. L'angolo è quello visto nella ripresa, non rispetto alla porta.</p>` + foot;
@@ -1011,7 +1011,7 @@ function runBehind(blobs, times, onProg) {
   return new Promise(resolve => {
     let bw;
     try { bw = new Worker('behind-worker.js'); } catch (e) { resolve({ ok: false, reason: 'analisi da dietro non disponibile su questo browser' }); return; }
-    const FW = 585, cv = document.createElement('canvas');
+    const cv = document.createElement('canvas');
     const cx = cv.getContext('2d', { willReadFrequently: true });
     const finish = r => { clearInterval(poll); bw.terminate(); resolve(r); };
     const poll = setInterval(() => { if (VID.cancel) bw.postMessage({ type: 'cancel' }); }, 400);
@@ -1019,11 +1019,12 @@ function runBehind(blobs, times, onProg) {
     bw.onmessage = async ev => {
       const m = ev.data;
       if (m.type === 'progress') onProg(m.text, m.p);
+      else if (m.type === 'log') console.log('[dietro]', m.text);
       else if (m.type === 'done') finish(m.result);
       else if (m.type === 'frame') {
         try {
           const bmp = await createImageBitmap(blobs[Math.min(blobs.length - 1, m.i)]);
-          const H = Math.round(FW * bmp.height / bmp.width);
+          const FW = m.W || 585, H = Math.round(FW * bmp.height / bmp.width);
           cv.width = FW; cv.height = H;
           cx.drawImage(bmp, 0, 0, FW, H);
           if (bmp.close) bmp.close();
@@ -1078,8 +1079,8 @@ async function analyzeVideo() {
     }
     $('#vProg').textContent = 'Cerco il pallone…';
     let analysis = await runAnalysis({ frames: gray, times, w: AW, h: AH, impactTime: null, mpp: null });
-    if (!analysis.ok && !VID.cancel) {
-      // di lato non c'è un tiro: provo come ripresa da dietro
+    if ((!analysis.ok || analysis.confidence !== 'alta') && !VID.cancel) {
+      // di lato non c'è un tiro sicuro: provo con il rilevatore di pallone (riprese da dietro o da lontano)
       const side = analysis;
       const t0 = Date.now();
       analysis = await runBehind(blobs, times, (text, p) => {
@@ -1092,7 +1093,7 @@ async function analyzeVideo() {
         analysis.points = analysis.points.map(p => ({ t: p.t, x: p.x * k, y: p.y * k }));
         analysis.pred = (analysis.pred || []).map(p => ({ t: p.t, x: p.x * k, y: p.y * k }));
         analysis.launchIndex = Math.max(0, Math.min(blobs.length - 1, analysis.launchIndex));
-      } else if (!analysis.kickIndex && !/modello|non disponibile|non riuscita/.test(analysis.reason || '')) analysis = side;
+      } else if (side.ok || (!analysis.kickIndex && !/modello|non disponibile|non riuscita/.test(analysis.reason || ''))) analysis = side;
     }
 
     let thumbIdx = Math.floor(blobs.length / 2);
