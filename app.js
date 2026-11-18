@@ -506,6 +506,16 @@ function drawOverlay(ctx, meta, idx) {
     n++;
   }
   if (n > 1) ctx.stroke();
+  // traiettoria prevista (tratteggiata): dove il pallone dovrebbe andare quando non lo vedo più
+  if (a.pred && a.pred.length && n === pts.length) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,210,74,.9)'; ctx.lineWidth = lw * 1.3; ctx.setLineDash([lw * 2.5, lw * 2.5]);
+    ctx.beginPath(); const l = pts[pts.length - 1]; ctx.moveTo(l.x * sx, l.y * sy);
+    let shown = 0;
+    for (const p of a.pred) { if (p.t > t + 1e-6) break; ctx.lineTo(p.x * sx, p.y * sy); shown++; }
+    if (shown) ctx.stroke();
+    ctx.restore();
+  }
   // pallone
   const cur = n ? pts[n - 1] : null;
   if (cur && t - cur.t < 0.12) {
@@ -620,7 +630,7 @@ function renderInfo() {
       `<div class="kv">Angolo nell'immagine<span>${fmt0(Math.abs(x.angle))}° ${x.angle > 0 ? 'a destra' : x.angle < 0 ? 'a sinistra' : ''}</span></div>` +
       `<div class="kv">Punti tracciati<span>${x.n}</span></div>` +
       `<div class="kv">Affidabilità<span class="badge ${x.conf}">${x.conf}</span></div>` +
-      `<p class="note">Da dietro non ti do i km/h: dipendono dallo zoom e dalla distanza e per ora non sono affidabili. Il percorso verde copre solo i primi istanti, finché il pallone è abbastanza grande da essere riconosciuto. L'angolo è quello visto nella ripresa, non rispetto alla porta.</p>` + foot;
+      `<p class="note">Da dietro non ti do i km/h: dipendono dallo zoom e dalla distanza e per ora non sono affidabili. Il percorso verde è dove ho visto davvero il pallone; la linea gialla tratteggiata è solo una previsione (continuazione più probabile) e diventa meno sicura man mano che si allontana. L'angolo è quello visto nella ripresa, non rispetto alla porta.</p>` + foot;
     return;
   }
   const head = x.kmh
@@ -1080,6 +1090,7 @@ async function analyzeVideo() {
       if (analysis.ok) { // porto i punti nelle coordinate dell'analisi (AW × AH)
         const k = AW / 585;
         analysis.points = analysis.points.map(p => ({ t: p.t, x: p.x * k, y: p.y * k }));
+        analysis.pred = (analysis.pred || []).map(p => ({ t: p.t, x: p.x * k, y: p.y * k }));
         analysis.launchIndex = Math.max(0, Math.min(blobs.length - 1, analysis.launchIndex));
       } else if (!analysis.kickIndex && !/modello|non disponibile|non riuscita/.test(analysis.reason || '')) analysis = side;
     }

@@ -174,9 +174,38 @@
     res.angleDeg = Math.atan2(vx, -vy) * 180 / Math.PI;
     res.direction = Math.abs(res.angleDeg) < 4 ? 'dritto' : res.angleDeg > 0 ? 'destra' : 'sinistra';
     res.ok = true;
+    res.pred = predictPath(pts, pts[pts.length - 1].t + 0.5, Math.max(0.02, (times[1] - times[0]) / 2));
     return res;
   }
 
-  const api = { analyzeBehind, candidates };
+
+  /* Traiettoria PREVISTA (tratteggiata): non è un rilevamento, è la continuazione più probabile.
+     Da dietro un pallone che si allontana a velocità costante sale verso l'orizzonte rallentando nell'immagine:
+     y = yh + c / (a + b t) (prospettiva) e, su un percorso dritto a terra, x è una retta di y. */
+  function predictPath(points, tEnd, dtStep) {
+    const P = points.slice(1); // il primo è il pallone fermo
+    if (P.length < 4) return [];
+    const t0 = P[0].t, T = P.map((p) => p.t - t0), Y = P.map((p) => p.y), X = P.map((p) => p.x);
+    const lin = (u, v) => { const n = u.length, mu = u.reduce((a, b) => a + b, 0) / n, mv = v.reduce((a, b) => a + b, 0) / n;
+      let num = 0, den = 0; for (let k = 0; k < n; k++) { num += (u[k] - mu) * (v[k] - mv); den += (u[k] - mu) ** 2; }
+      const b = den ? num / den : 0, a = mv - b * mu; let e = 0; for (let k = 0; k < n; k++) e += (v[k] - a - b * u[k]) ** 2; return { a, b, e }; };
+    const yMin = Math.min(...Y); let best = null;
+    for (let gap = 4; gap <= 700; gap *= 1.15) {          // yh = orizzonte sconosciuto sopra il pallone
+      const yh = yMin - gap, inv = Y.map((y) => 1 / (y - yh)), f = lin(T, inv);
+      if (f.b <= 0) continue;                              // si deve allontanare
+      if (!best || f.e < best.e) best = { yh, f, e: f.e };
+    }
+    if (!best) return [];
+    const lx = lin(Y, X), out = [], step = dtStep || 0.04;
+    for (let t = T[T.length - 1] + step; t <= tEnd + 1e-9; t += step) {
+      const inv = best.f.a + best.f.b * t; if (inv <= 0) break;
+      const y = best.yh + 1 / inv;
+      if (y < best.yh + 2) break;
+      out.push({ t: t0 + t, x: lx.a + lx.b * y, y });
+    }
+    return out;
+  }
+
+  const api = { analyzeBehind, candidates, predictPath };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.KickBehind = api;
 })(typeof self !== 'undefined' ? self : this);
