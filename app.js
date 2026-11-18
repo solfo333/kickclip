@@ -117,6 +117,7 @@ const clipMpp = m => mppFromCalib(m.calib, m.aw, m.ah);
 function metrics(meta) {
   const a = meta.analysis;
   if (!a || !a.ok) return null;
+  if (a.view === 'dietro') return { behind: true, angle: a.angleDeg, dir: a.direction, conf: a.confidence, n: a.n };
   const mpp = clipMpp(meta);
   const out = { speedPx: a.speedPx, angle: a.angleDeg, dir: a.direction, conf: a.confidence, n: a.n };
   if (mpp) {
@@ -446,7 +447,7 @@ async function renderClips() {
     const d = new Date(m.ts);
     const b = document.createElement('button');
     b.className = 'clip';
-    const sp = !x ? '—' : x.kmh ? `${fmt0(x.kmh)} km/h` : `${fmt0(x.speedPx)} px/s`;
+    const sp = !x ? '—' : x.behind ? `da dietro · ${x.dir}` : x.kmh ? `${fmt0(x.kmh)} km/h` : `${fmt0(x.speedPx)} px/s`;
     b.innerHTML = `<img alt="" src="${url}"><span class="sp">${sp}</span>${m.fav ? '<span class="star">★</span>' : ''}` +
       `<div class="meta">${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} · ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}${m.source === 'manuale' ? ' · manuale' : m.source === 'video' ? ' · video' : ''}</div>`;
     b.onclick = () => openPlayer(m.id);
@@ -515,8 +516,8 @@ function drawOverlay(ctx, meta, idx) {
   // scritta con la velocità, dal momento del tiro
   if (t >= pts[0].t - 0.05) {
     const m = metrics(meta);
-    const big = m.kmh ? `${fmt0(m.kmh)} km/h` : `${fmt0(m.speedPx)} px/s`;
-    const small = m.kmh ? `${fmt0(m.angle)}° · max ${fmt1(m.height)} m` : 'imposta la scala per i km/h';
+    const big = m.behind ? `verso ${m.dir}` : m.kmh ? `${fmt0(m.kmh)} km/h` : `${fmt0(m.speedPx)} px/s`;
+    const small = m.behind ? `tiro da dietro · ${fmt0(Math.abs(m.angle))}° nell'immagine` : m.kmh ? `${fmt0(m.angle)}° · max ${fmt1(m.height)} m` : 'imposta la scala per i km/h';
     const fs = Math.round(meta.w / 14), fs2 = Math.round(meta.w / 32), pad = fs2;
     ctx.font = `800 ${fs}px system-ui, sans-serif`;
     const w1 = ctx.measureText(big).width;
@@ -612,6 +613,14 @@ function renderInfo() {
     const why = m.analysis && m.analysis.reason ? m.analysis.reason : 'palla non rilevata';
     el.innerHTML = `<div class="kv"><b>Analisi</b><span>${why}</span></div>` +
       `<p class="note">Consigli: telefono fermo su un treppiede, di lato al tiro, sfondo uniforme, buona luce e, se puoi, 60 fps. Tocca «Imposta scala» per aiutare il rilevamento.</p>` + foot;
+    return;
+  }
+  if (x.behind) {
+    el.innerHTML = `<div class="bigspeed" style="font-size:34px">${x.dir}<small>vista da dietro</small></div>` +
+      `<div class="kv">Angolo nell'immagine<span>${fmt0(Math.abs(x.angle))}° ${x.angle > 0 ? 'a destra' : x.angle < 0 ? 'a sinistra' : ''}</span></div>` +
+      `<div class="kv">Punti tracciati<span>${x.n}</span></div>` +
+      `<div class="kv">Affidabilità<span class="badge ${x.conf}">${x.conf}</span></div>` +
+      `<p class="note">Da dietro non ti do i km/h: dipendono dallo zoom e dalla distanza e per ora non sono affidabili. Il percorso verde copre solo i primi istanti, finché il pallone è abbastanza grande da essere riconosciuto. L'angolo è quello visto nella ripresa, non rispetto alla porta.</p>` + foot;
     return;
   }
   const head = x.kmh
@@ -946,6 +955,77 @@ function seekTo(v, t) {
   });
 }
 
+/* Lettura per riproduzione: prende ogni fotogramma realmente mostrato, con il suo tempo esatto.
+   Più affidabile dei salti (seek), che su alcuni telefoni restituiscono fotogrammi ripetuti. */
+async function captureByPlayback(v, o) {
+  if (!('requestVideoFrameCallback' in v)) return null;
+  const { start, len, sps, k, cx, cv, sx, W, H, AW, AH } = o;
+  const gray = [], blobPromises = [], times = [];
+  await seekTo(v, start);
+  let last = -1, base = null, done = false, guard = 0;
+  await new Promise(resolve => {
+    const finish = () => { if (done) return; done = true; clearTimeout(guard); v.pause(); resolve(); };
+    guard = setTimeout(finish, (len / 0.5) * 1000 + 6000);
+    v.onended = finish;
+    const cb = (now, m) => {
+      if (done) return;
+      const mt = m.mediaTime;
+      if (VID.cancel || mt >= start + len) { finish(); return; }
+      if (last < 0 || mt - last >= (1 / sps) * 0.9) {
+        if (base === null) base = mt;
+        cx.drawImage(v, 0, 0, W, H);
+        blobPromises.push(new Promise(r => cv.toBlob(r, 'image/jpeg', QUALITY[settings.quality] || 0.65)));
+        sx.drawImage(v, 0, 0, AW, AH);
+        const px = sx.getImageData(0, 0, AW, AH).data;
+        const g = new Uint8Array(AW * AH);
+        for (let a = 0, b = 0; a < g.length; a++, b += 4) g[a] = (px[b] * 77 + px[b + 1] * 150 + px[b + 2] * 29) >> 8;
+        gray.push(g);
+        times.push((mt - base) / k);
+        last = mt;
+        if (gray.length % 8 === 0) $('#vProg').textContent = `Leggo il video… ${Math.round((mt - start) / len * 100)}%`;
+      }
+      v.requestVideoFrameCallback(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+    v.playbackRate = 0.5;
+    v.play().catch(finish);
+  });
+  v.onended = null;
+  if (gray.length < 8) return null;
+  const blobs = await Promise.all(blobPromises);
+  return { gray, blobs, times };
+}
+
+/* Tiro da dietro: rilevatore di pallone in un secondo Worker (i fotogrammi li decodifico qui). */
+function runBehind(blobs, times, onProg) {
+  return new Promise(resolve => {
+    let bw;
+    try { bw = new Worker('behind-worker.js'); } catch (e) { resolve({ ok: false, reason: 'analisi da dietro non disponibile su questo browser' }); return; }
+    const FW = 585, cv = document.createElement('canvas');
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    const finish = r => { clearInterval(poll); bw.terminate(); resolve(r); };
+    const poll = setInterval(() => { if (VID.cancel) bw.postMessage({ type: 'cancel' }); }, 400);
+    bw.onerror = () => finish({ ok: false, reason: 'analisi da dietro non riuscita' });
+    bw.onmessage = async ev => {
+      const m = ev.data;
+      if (m.type === 'progress') onProg(m.text, m.p);
+      else if (m.type === 'done') finish(m.result);
+      else if (m.type === 'frame') {
+        try {
+          const bmp = await createImageBitmap(blobs[Math.min(blobs.length - 1, m.i)]);
+          const H = Math.round(FW * bmp.height / bmp.width);
+          cv.width = FW; cv.height = H;
+          cx.drawImage(bmp, 0, 0, FW, H);
+          if (bmp.close) bmp.close();
+          const d = cx.getImageData(0, 0, FW, H);
+          bw.postMessage({ type: 'frame', id: m.id, buf: d.data.buffer, width: FW, height: H }, [d.data.buffer]);
+        } catch (e) { finish({ ok: false, reason: 'non riesco a leggere i fotogrammi' }); }
+      }
+    };
+    bw.postMessage({ type: 'run', times });
+  });
+}
+
 async function analyzeVideo() {
   if (VID.busy) return;
   const v = $('#vPrev');
@@ -968,9 +1048,12 @@ async function analyzeVideo() {
 
   VID.busy = true; VID.cancel = false;
   $('#vGo').disabled = true;
-  const gray = [], blobs = [], times = [];
+  let gray = [], blobs = [], times = [];
   try {
-    for (let i = 0; i < N; i++) {
+    const played = await captureByPlayback(v, { start, len, sps, k, cx, cv, sx, W, H, AW, AH });
+    if (VID.cancel) throw new Error('annullato');
+    if (played) { gray = played.gray; blobs = played.blobs; times = played.times; }
+    else for (let i = 0; i < N; i++) {
       if (VID.cancel) throw new Error('annullato');
       await seekTo(v, Math.min(VID.dur - 0.01, start + i / sps));
       cx.drawImage(v, 0, 0, W, H);
@@ -984,7 +1067,22 @@ async function analyzeVideo() {
       if (i % 4 === 0) $('#vProg').textContent = `Leggo il video… ${Math.round(i / N * 100)}%`;
     }
     $('#vProg').textContent = 'Cerco il pallone…';
-    const analysis = await runAnalysis({ frames: gray, times, w: AW, h: AH, impactTime: null, mpp: null });
+    let analysis = await runAnalysis({ frames: gray, times, w: AW, h: AH, impactTime: null, mpp: null });
+    if (!analysis.ok && !VID.cancel) {
+      // di lato non c'è un tiro: provo come ripresa da dietro
+      const side = analysis;
+      const t0 = Date.now();
+      analysis = await runBehind(blobs, times, (text, p) => {
+        const el = (Date.now() - t0) / 1000;
+        $('#vProg').textContent = `Da dietro: ${text} ${Math.round(p * 100)}% (${Math.round(el)} s, può richiedere qualche minuto)`;
+      });
+      if (VID.cancel) throw new Error('annullato');
+      if (analysis.ok) { // porto i punti nelle coordinate dell'analisi (AW × AH)
+        const k = AW / 585;
+        analysis.points = analysis.points.map(p => ({ t: p.t, x: p.x * k, y: p.y * k }));
+        analysis.launchIndex = Math.max(0, Math.min(blobs.length - 1, analysis.launchIndex));
+      } else if (!analysis.kickIndex && !/modello|non disponibile|non riuscita/.test(analysis.reason || '')) analysis = side;
+    }
 
     let thumbIdx = Math.floor(blobs.length / 2);
     if (analysis.ok) thumbIdx = analysis.launchIndex;
@@ -998,7 +1096,8 @@ async function analyzeVideo() {
     await enforceLimit();
     VID.busy = false;
     closeVideoModal();
-    if (analysis.ok) toast('Tiro trovato: tocca «Imposta scala» per i km/h', 4000);
+    if (analysis.ok && analysis.view === 'dietro') toast('Tiro da dietro trovato: direzione e percorso iniziale', 4000);
+    else if (analysis.ok) toast('Tiro trovato: tocca «Imposta scala» per i km/h', 4000);
     else toast('Palla non rilevata: prova a iniziare più vicino al tiro', 4000);
     await openPlayer(meta.id);
   } catch (e) {

@@ -1,7 +1,7 @@
 /* KickClip – service worker: l'app funziona anche offline */
-const CACHE = 'kickclip-v2';
+const CACHE = 'kickclip-v3';
 const ASSETS = [
-  './', 'index.html', 'app.js', 'analysis.js', 'worker.js',
+  './', 'index.html', 'app.js', 'analysis.js', 'worker.js', 'darknet.js', 'behind.js', 'behind-worker.js',
   'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'
 ];
 
