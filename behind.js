@@ -71,6 +71,23 @@
     return out;
   }
 
+  function isGrass(r, g, b) {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), sat = mx ? 255 * (mx - mn) / mx : 0;
+    if (mx === mn || sat <= 70 || mx <= 35) return false;
+    const d = mx - mn, hue = (mx === r ? 60 * (((g - b) / d) % 6) : mx === g ? 60 * ((b - r) / d + 2) : 60 * ((r - g) / d + 4) + 360) % 360;
+    return hue >= 60 && hue <= 180;
+  }
+  /* quota di erba attorno a un punto: un pallone fermo è circondato dal prato, lo stemma sui pantaloncini no */
+  function grassAround(f, x, y, d) {
+    let g = 0, n = 0;
+    for (let a = 0; a < 24; a++) for (const rr of [1.4, 1.9, 2.5]) {
+      const px = Math.round(x + Math.cos(a * Math.PI / 12) * d * rr), py = Math.round(y + Math.sin(a * Math.PI / 12) * d * rr);
+      if (px < 0 || py < 0 || px >= f.width || py >= f.height) continue;
+      const p = (py * f.width + px) * 4; n++; if (isGrass(f.data[p], f.data[p + 1], f.data[p + 2])) g++;
+    }
+    return n ? g / n : 0;
+  }
+
   const near = (c, list, tol) => list.some((o) => Math.hypot(o.x - c.x, o.y - c.y) <= tol);
 
   async function analyzeBehind(opt) {
@@ -88,7 +105,7 @@
     const cA = candidates(f0);
     const others = [];
     for (const i of refIdx.slice(1)) others.push(candidates(await getFrame(i)));
-    const hasSame = (c, l) => l.some((o) => Math.hypot(o.x - c.x, o.y - c.y) <= 3 * sc && Math.abs(o.d - c.d) < 0.3 * c.d);
+    const hasSame = (c, l) => l.some((o) => Math.hypot(o.x - c.x, o.y - c.y) <= 2 * sc && Math.abs(o.d - c.d) < 0.3 * c.d);
     const still = cA.filter((c) => others.filter((l) => hasSame(c, l)).length >= 2);
     // più "pallone" = più tondo e di dimensione plausibile; niente doppioni (bianco + non erba sullo stesso pallone)
     const ballness = (c) => (1 - Math.min(1, Math.abs(c.fill - 0.785) / 0.3)) + (1 - Math.min(1, Math.abs(Math.log(c.ar)))) +
@@ -103,7 +120,11 @@
       const cs = Math.round(160 * sc), cr = crop(f0, c.x, c.y, cs);
       const dets = net.detect(cr.img, { size: Math.max(256, Math.round(256 * sc / 32) * 32), conf: 0.25 });
       const hit = dets.find((r) => Math.hypot(r.x + cr.x0 - c.x, r.y + cr.y0 - c.y) <= Math.max(8 * sc, c.d));
-      if (hit && (!rest || hit.score > rest.score)) rest = { x: c.x, y: c.y, d: c.d, score: hit.score, bbox: (hit.w + hit.h) / 2 };
+      if (hit) {
+        const gr = grassAround(f0, c.x, c.y, c.d), val = hit.score * (0.35 + 0.65 * Math.min(1, gr / 0.5));
+        log('verifica', Math.round(c.x), Math.round(c.y), 'd', Math.round(c.d), 'rete', +hit.score.toFixed(2), 'erba', +gr.toFixed(2), 'valore', +val.toFixed(2));
+        if (!rest || val > rest.val) rest = { x: c.x, y: c.y, d: c.d, score: hit.score, val, grass: gr, bbox: (hit.w + hit.h) / 2 };
+      }
     }
     if (!rest) return { ok: false, reason: 'pallone fermo non trovato: inquadra la palla ferma per almeno un secondo prima del tiro' };
     log('pallone fermo', rest);
