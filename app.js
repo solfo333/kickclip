@@ -10,12 +10,13 @@ const fmt1 = n => n.toLocaleString('it-IT', { minimumFractionDigits: 1, maximumF
 const fmt2 = n => n.toLocaleString('it-IT', { maximumFractionDigits: 2 });
 
 /* ============================ Impostazioni ============================ */
-const DEFAULTS = { pre: 4, post: 4, fps: 30, mode: 'audio', sens: 6, facing: 'environment', quality: 'std', maxClips: 40, calib: null };
+const DEFAULTS = { pre: 4, post: 4, fps: 30, mode: 'video', sens: 6, facing: 'environment', quality: 'std', maxClips: 40, calib: null };
 const QUALITY = { low: 0.5, std: 0.65, high: 0.82 };
 let settings = (() => {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('kickclip.settings') || '{}') }; }
   catch (e) { return { ...DEFAULTS }; }
 })();
+if (!settings.visionMigrated) { settings.visionMigrated = true; if (settings.mode === 'audio') settings.mode = 'video'; try { localStorage.setItem('kickclip.settings', JSON.stringify(settings)); } catch (e) { /* ignora */ } }
 const saveSettings = () => { try { localStorage.setItem('kickclip.settings', JSON.stringify(settings)); } catch (e) { /* ignora */ } };
 
 function toast(msg, ms = 2800) {
@@ -164,7 +165,7 @@ async function startCapture() {
   const video = { facingMode: settings.facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: settings.fps } };
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    stream = await navigator.mediaDevices.getUserMedia(settings.mode === 'video' ? { video } : { video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   } catch (e) {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video });
@@ -191,6 +192,7 @@ async function startCapture() {
   cap.lastFrameT = 0; cap.mtOff = undefined; cap.fpsCount = 0; cap.fpsT = now(); cap.sessionShots = 0;
   cap.running = true;
   setupAudio(stream);
+  visionStart();
   scheduleFrame();
   cap.uiTimer = setInterval(uiTick, 500);
   lockScreen();
@@ -200,6 +202,7 @@ async function startCapture() {
 
 function stopCapture() {
   cap.running = false;
+  visionStop();
   clearInterval(cap.uiTimer);
   clearInterval(audio.timer);
   if (audio.ctx) { try { audio.ctx.close(); } catch (e) { /* ignora */ } }
@@ -251,6 +254,7 @@ function onFrame(t) {
     cap.motion.push({ t, v: c / (n / 2) });
   }
   cap.prevGray = g;
+  visionFrame(g, t);
 
   // frame JPEG per la clip
   const entry = { t, g, blob: null };
@@ -272,15 +276,15 @@ function uiTick() {
   cap.fpsCount = 0; cap.fpsT = t;
   $('#chipFps').textContent = `${Math.round(cap.fps)} fps`;
   const st = $('#chipState');
-  st.textContent = cap.pendingShots ? '● Salvo il tiro…' : '● In ascolto';
+  st.textContent = cap.pendingShots ? '● Salvo il tiro…' : settings.mode === 'video' ? visionLabel() : '● In ascolto';
 }
 
 function setRunningUI(on) {
   $('#camwrap').classList.toggle('live', on);
   $('#chipState').hidden = !on;
   $('#chipFps').hidden = !on;
-  $('#meterWrap').hidden = !on;
-  $('#meterLbl').hidden = !on;
+  $('#meterWrap').hidden = !on || settings.mode === 'video';
+  $('#meterLbl').hidden = !on || settings.mode === 'video';
   $('#btnManual').disabled = !on;
   const b = $('#btnStart');
   b.textContent = on ? 'Ferma registrazione' : 'Avvia registrazione';
@@ -290,6 +294,80 @@ function setRunningUI(on) {
 
 function updateManualLabel() {
   $('#btnManual').textContent = `Salva ultimi ${settings.pre + settings.post} s`;
+}
+
+/* ============================ Solo video: riconosce il calcio guardando il pallone ============================ */
+/* 1) un secondo Worker (behind-worker.js) cerca il pallone fermo (rilevatore di oggetti);
+   2) KickWatch guarda la zona attorno al pallone: un cambiamento improvviso = calcio;
+   3) mezzo secondo dopo il rilevatore controlla che il pallone non sia più lì (altrimenti era una persona che passava). */
+const vis = { worker: null, state: 'off', rest: null, kw: null, snaps: [], pending: false, eventT: 0, coolUntil: 0, timer: 0, cv: null, cx: null };
+
+function visionStart() {
+  visionStop();
+  if (settings.mode !== 'video') return;
+  vis.state = 'loading'; vis.rest = null; vis.snaps = []; vis.pending = false; vis.coolUntil = 0;
+  vis.kw = new KickWatch(cap.AW, cap.AH);
+  vis.cv = document.createElement('canvas');
+  vis.cv.width = 585; vis.cv.height = Math.round(585 * cap.H / cap.W);
+  vis.cx = vis.cv.getContext('2d', { willReadFrequently: true });
+  try { vis.worker = new Worker('behind-worker.js'); } catch (e) { visionFail(); return; }
+  vis.worker.onmessage = visionMsg;
+  vis.worker.onerror = () => visionFail();
+  vis.worker.postMessage({ type: 'init' });
+  vis.timer = setInterval(visionTick, 450);
+}
+function visionStop() {
+  clearInterval(vis.timer);
+  if (vis.worker) { vis.worker.terminate(); vis.worker = null; }
+  vis.state = 'off'; vis.pending = false;
+}
+function visionFail() {
+  if (vis.state === 'failed') return;
+  vis.state = 'failed';
+  toast('Rilevatore non disponibile: usa «Salva ultimi secondi» oppure scegli Audio nelle Impostazioni', 6000);
+}
+function visionLabel() {
+  return { loading: '● Carico il rilevatore…', search: '● Cerco il pallone…', armed: '● Pallone pronto', verifying: '● Controllo…', failed: '● Rilevatore non disponibile' }[vis.state] || '● In ascolto';
+}
+function visionGrab() {
+  vis.cx.drawImage(cap.video, 0, 0, vis.cv.width, vis.cv.height);
+  const d = vis.cx.getImageData(0, 0, vis.cv.width, vis.cv.height);
+  return { buf: d.data.buffer, width: d.width, height: d.height };
+}
+function visionTick() {
+  if (!cap.running || vis.state !== 'search' || vis.pending || now() < vis.coolUntil) return;
+  vis.snaps.push(visionGrab());
+  if (vis.snaps.length < 3) return;
+  vis.pending = true;
+  const fr = vis.snaps; vis.snaps = [];
+  vis.worker.postMessage({ type: 'lock', frames: fr }, fr.map(f => f.buf));
+}
+function visionMsg(ev) {
+  const m = ev.data;
+  if (m.type === 'ready') vis.state = 'search';
+  else if (m.type === 'error') visionFail();
+  else if (m.type === 'lock') {
+    vis.pending = false;
+    if (!cap.running) return;
+    if (m.rest) { vis.rest = m.rest; vis.kw.arm(m.rest, cap.AW / 585); vis.state = 'armed'; } else vis.state = 'search';
+  } else if (m.type === 'check') {
+    vis.pending = false;
+    if (!cap.running) return;
+    if (m.there) { vis.kw.arm(vis.rest, cap.AW / 585); vis.state = 'armed'; } // falso allarme: il pallone è ancora lì
+    else { registerShot(vis.eventT, 'visione'); vis.state = 'search'; vis.coolUntil = now() + 2.5; vis.rest = null; vis.kw.reset(); }
+  }
+}
+function visionFrame(g, t) {
+  if (settings.mode !== 'video' || vis.state !== 'armed') return;
+  const e = vis.kw.push(g, t);
+  if (!e) return;
+  vis.state = 'verifying'; vis.eventT = e.t;
+  setTimeout(() => {
+    if (!cap.running || vis.state !== 'verifying') return;
+    vis.pending = true;
+    const f = visionGrab();
+    vis.worker.postMessage({ type: 'check', buf: f.buf, width: f.width, height: f.height, rest: vis.rest }, [f.buf]);
+  }, 500);
 }
 
 /* ============================ Audio: rilevamento dell'impatto ============================ */
@@ -379,7 +457,7 @@ async function finalizeShot(T, source, manual, dims) {
   const mpp = mppFromCalib(settings.calib, dims.AW, dims.AH);
   const analysis = await runAnalysis({
     frames: sel.map(e => e.g), times, w: dims.AW, h: dims.AH,
-    impactTime: manual ? null : 0, mpp
+    impactTime: (manual || source === 'visione') ? null : 0, mpp
   });
 
   let thumbIdx = 0;
@@ -618,7 +696,7 @@ function updateFavBtn() { $('#pFav').textContent = P.meta && P.meta.fav ? '★ P
 function renderInfo() {
   const m = P.meta, x = metrics(m), el = $('#pInfo');
   const when = new Date(m.ts).toLocaleString('it-IT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
-  const foot = `<p class="note" style="margin-top:10px">${when} · ${m.source === 'video' ? 'video caricato' : m.source === 'manuale' ? 'salvataggio manuale' : 'rilevato dall\'audio'}</p>`;
+  const foot = `<p class="note" style="margin-top:10px">${when} · ${m.source === 'video' ? 'video caricato' : m.source === 'manuale' ? 'salvataggio manuale' : m.source === 'visione' ? 'rilevato dal video' : 'rilevato dall\'audio'}</p>`;
   if (!x) {
     const why = m.analysis && m.analysis.reason ? m.analysis.reason : 'palla non rilevata';
     el.innerHTML = `<div class="kv"><b>Analisi</b><span>${why}</span></div>` +
@@ -908,7 +986,7 @@ function bindSettings() {
 
 /* ============================ Carica un video ============================ */
 const VID = { url: null, dur: 0, busy: false, cancel: false };
-function isFree(m) { return m.source === 'manuale' || m.source === 'video'; }
+function isFree(m) { return m.source === 'manuale' || m.source === 'video' || m.source === 'visione'; }
 
 function updateVidInfo() {
   const s = (+$('#vStart').value) / 10;

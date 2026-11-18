@@ -197,9 +197,10 @@ input[type=range].wide{width:100%;accent-color:var(--ac);margin:8px 0}
 
   <h2>Rilevamento</h2>
   <div class="card">
-    <div class="field"><label for="sMode">Modalità<small>Audio = ascolta l'impatto sul pallone</small></label>
+    <div class="field"><label for="sMode">Modalità<small>Solo video = riconosce il calcio guardando il pallone, senza microfono</small></label>
       <select id="sMode">
-        <option value="audio">Audio (consigliata)</option>
+        <option value="video">Solo video: vede quando calci (consigliata)</option>
+        <option value="audio">Audio</option>
         <option value="both">Audio + movimento</option>
         <option value="manual">Solo manuale</option>
       </select></div>
@@ -336,6 +337,7 @@ input[type=range].wide{width:100%;accent-color:var(--ac);margin:8px 0}
 <div id="toast"></div>
 
 <script src="analysis.js"></script>
+<script src="kickwatch.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

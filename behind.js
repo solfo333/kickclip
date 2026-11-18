@@ -90,6 +90,45 @@
 
   const near = (c, list, tol) => list.some((o) => Math.hypot(o.x - c.x, o.y - c.y) <= tol);
 
+  /* Trova il pallone FERMO: candidati tondi che stanno nello stesso punto in più fotogrammi,
+     confermati dal rilevatore e circondati da prato. frames: almeno 2 fotogrammi RGBA. */
+  function findRestBall(net, frames, o) {
+    o = o || {};
+    const log = o.log || (() => {}), cancelled = o.cancelled || (() => false);
+    const f0 = frames[0], sc = f0.width / 585;
+    const cA = candidates(f0);
+    const others = frames.slice(1).map((f) => candidates(f));
+    const need = Math.min(2, others.length);
+    const hasSame = (c, l) => l.some((o2) => Math.hypot(o2.x - c.x, o2.y - c.y) <= 2 * sc && Math.abs(o2.d - c.d) < 0.3 * c.d);
+    const still = cA.filter((c) => others.filter((l) => hasSame(c, l)).length >= need);
+    // più "pallone" = più tondo e di dimensione plausibile; niente doppioni (bianco + non erba sullo stesso pallone)
+    const ballness = (c) => (1 - Math.min(1, Math.abs(c.fill - 0.785) / 0.3)) + (1 - Math.min(1, Math.abs(Math.log(c.ar)))) +
+      (c.d / sc >= 12 && c.d / sc <= 90 ? 0.8 : 0) + (c.d / sc >= 25 ? 0.3 : 0);
+    still.sort((a, b) => ballness(b) - ballness(a));
+    for (let k = still.length - 1; k >= 0; k--) if (still.some((o2, j) => j < k && Math.hypot(o2.x - still[k].x, o2.y - still[k].y) < Math.max(o2.d, still[k].d))) still.splice(k, 1);
+    log('candidati fermi', still.length, still.slice(0, 10).map((c) => [Math.round(c.x), Math.round(c.y), Math.round(c.d), c.kind, +ballness(c).toFixed(2)].join(':')).join(' '));
+    let rest = null;
+    for (const c of still.slice(0, o.maxTry || 8)) {
+      if (cancelled()) return { cancelled: true };
+      const cs = Math.round(160 * sc), cr = crop(f0, c.x, c.y, cs);
+      const dets = net.detect(cr.img, { size: Math.max(256, Math.round(256 * sc / 32) * 32), conf: 0.25 });
+      const hit = dets.find((r) => Math.hypot(r.x + cr.x0 - c.x, r.y + cr.y0 - c.y) <= Math.max(8 * sc, c.d));
+      if (hit) {
+        const gr = grassAround(f0, c.x, c.y, c.d), val = hit.score * (0.35 + 0.65 * Math.min(1, gr / 0.5));
+        log('verifica', Math.round(c.x), Math.round(c.y), 'd', Math.round(c.d), 'rete', +hit.score.toFixed(2), 'erba', +gr.toFixed(2), 'valore', +val.toFixed(2));
+        if (!rest || val > rest.val) rest = { x: c.x, y: c.y, d: c.d, score: hit.score, val, grass: gr, bbox: (hit.w + hit.h) / 2 };
+      }
+    }
+    return rest;
+  }
+
+  /* Il pallone è ancora nel punto dove stava? (dopo un presunto calcio, per escludere falsi allarmi) */
+  function ballStillThere(net, f, rest) {
+    const sc = f.width / 585, cs = Math.round(160 * sc), cr = crop(f, rest.x, rest.y, cs);
+    const dets = net.detect(cr.img, { size: Math.max(256, Math.round(256 * sc / 32) * 32), conf: 0.35 });
+    return dets.some((r) => Math.hypot(r.x + cr.x0 - rest.x, r.y + cr.y0 - rest.y) <= Math.max(8 * sc, rest.d));
+  }
+
   async function analyzeBehind(opt) {
     const { getFrame, times, net } = opt, N = times.length;
     const prog = opt.onProgress || (() => {}), cancelled = opt.cancelled || (() => false);
@@ -100,32 +139,11 @@
     prog('Cerco il pallone fermo…', 0.02);
     // il pallone fermo è nello stesso punto in quasi tutti i primi fotogrammi (il giocatore invece si muove)
     const refIdx = [0, 0.04, 0.08, 0.12, 0.16].map((q, k) => Math.max(k, Math.floor(N * q)));
-    const f0 = await getFrame(refIdx[0]);
-    const w = f0.width, h = f0.height, sc = w / 585;
-    const cA = candidates(f0);
-    const others = [];
-    for (const i of refIdx.slice(1)) others.push(candidates(await getFrame(i)));
-    const hasSame = (c, l) => l.some((o) => Math.hypot(o.x - c.x, o.y - c.y) <= 2 * sc && Math.abs(o.d - c.d) < 0.3 * c.d);
-    const still = cA.filter((c) => others.filter((l) => hasSame(c, l)).length >= 2);
-    // più "pallone" = più tondo e di dimensione plausibile; niente doppioni (bianco + non erba sullo stesso pallone)
-    const ballness = (c) => (1 - Math.min(1, Math.abs(c.fill - 0.785) / 0.3)) + (1 - Math.min(1, Math.abs(Math.log(c.ar)))) +
-      (c.d / sc >= 12 && c.d / sc <= 90 ? 0.8 : 0) + (c.d / sc >= 25 ? 0.3 : 0);
-    still.sort((a, b) => ballness(b) - ballness(a));
-    for (let k = still.length - 1; k >= 0; k--) if (still.some((o, j) => j < k && Math.hypot(o.x - still[k].x, o.y - still[k].y) < Math.max(o.d, still[k].d))) still.splice(k, 1);
-    log('candidati fermi', still.length, still.slice(0, 10).map((c) => [Math.round(c.x), Math.round(c.y), Math.round(c.d), c.kind, +ballness(c).toFixed(2)].join(':')).join(' '), '| palla?', still.filter((c) => Math.hypot(c.x - 318, c.y - 840) < 30).map((c) => [Math.round(c.x), Math.round(c.y), Math.round(c.d), +c.fill.toFixed(2), +c.ar.toFixed(2)].join(':')).join(' '));
-    let rest = null, tried = 0;
-    for (const c of still.slice(0, 8)) {
-      if (cancelled()) return { ok: false, reason: 'annullato' };
-      prog('Controllo il pallone…', 0.05 + 0.1 * (tried++ / 8));
-      const cs = Math.round(160 * sc), cr = crop(f0, c.x, c.y, cs);
-      const dets = net.detect(cr.img, { size: Math.max(256, Math.round(256 * sc / 32) * 32), conf: 0.25 });
-      const hit = dets.find((r) => Math.hypot(r.x + cr.x0 - c.x, r.y + cr.y0 - c.y) <= Math.max(8 * sc, c.d));
-      if (hit) {
-        const gr = grassAround(f0, c.x, c.y, c.d), val = hit.score * (0.35 + 0.65 * Math.min(1, gr / 0.5));
-        log('verifica', Math.round(c.x), Math.round(c.y), 'd', Math.round(c.d), 'rete', +hit.score.toFixed(2), 'erba', +gr.toFixed(2), 'valore', +val.toFixed(2));
-        if (!rest || val > rest.val) rest = { x: c.x, y: c.y, d: c.d, score: hit.score, val, grass: gr, bbox: (hit.w + hit.h) / 2 };
-      }
-    }
+    const refFrames = [];
+    for (const i of refIdx) refFrames.push(await getFrame(i));
+    const f0 = refFrames[0], w = f0.width, h = f0.height, sc = w / 585;
+    const rest = findRestBall(net, refFrames, { log, cancelled });
+    if (rest && rest.cancelled) return { ok: false, reason: 'annullato' };
     if (!rest) return { ok: false, reason: 'pallone fermo non trovato: inquadra la palla ferma per almeno un secondo prima del tiro' };
     log('pallone fermo', rest);
 
@@ -255,6 +273,6 @@
     return out;
   }
 
-  const api = { analyzeBehind, candidates, predictPath };
+  const api = { analyzeBehind, candidates, predictPath, findRestBall, ballStillThere };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.KickBehind = api;
 })(typeof self !== 'undefined' ? self : this);

@@ -28,6 +28,25 @@ self.onmessage = async ev => {
   if (m.type === 'frame') {
     const r = waiting.get(m.id);
     if (r) { waiting.delete(m.id); r({ data: new Uint8ClampedArray(m.buf), width: m.width, height: m.height }); }
+  } else if (m.type === 'init') {
+    // modalità «solo video» dal vivo: carico il rilevatore una volta
+    try { await loadNet(); self.postMessage({ type: 'ready' }); }
+    catch (e) { self.postMessage({ type: 'error', text: e.message }); }
+  } else if (m.type === 'lock') {
+    // cerca il pallone fermo in 3 fotogrammi a colori
+    try {
+      const n = await loadNet();
+      const fr = m.frames.map(f => ({ data: new Uint8ClampedArray(f.buf), width: f.width, height: f.height }));
+      const rest = self.KickBehind.findRestBall(n, fr, { maxTry: 4 });
+      self.postMessage({ type: 'lock', rest: rest && !rest.cancelled ? { x: rest.x, y: rest.y, d: rest.d, score: rest.score } : null });
+    } catch (e) { self.postMessage({ type: 'lock', rest: null, error: e.message }); }
+  } else if (m.type === 'check') {
+    // il pallone è ancora lì? (esclude i falsi allarmi)
+    try {
+      const n = await loadNet();
+      const f = { data: new Uint8ClampedArray(m.buf), width: m.width, height: m.height };
+      self.postMessage({ type: 'check', there: self.KickBehind.ballStillThere(n, f, m.rest) });
+    } catch (e) { self.postMessage({ type: 'check', there: false, error: e.message }); }
   } else if (m.type === 'cancel') {
     cancelFlag = true;
   } else if (m.type === 'run') {
